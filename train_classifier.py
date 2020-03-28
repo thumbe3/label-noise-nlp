@@ -613,7 +613,7 @@ def main(args):
                 print('Couldnt create GIF of BMM')
 
     if args.save_path:
-        torch.save(model.state_dict(), os.path.join(save_path,"last_model.bin"))
+        torch.save(model.state_dict(), os.path.join(args.save_path, "last_model.bin"))
 
     for file in glob.glob(os.path.join(folder, '*.png')):
         os.remove(file)
