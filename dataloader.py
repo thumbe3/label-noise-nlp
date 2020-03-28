@@ -6,6 +6,8 @@ import random
 import numpy as np
 import torch
 
+random.seed(0)
+
 def clean_str(string, TREC=False):
     """
     Tokenization/string cleaning for all datasets except for SST.
@@ -103,6 +105,15 @@ def create_one_batch(x, y, map2id, oov='<oov>'):
     assert x.size(0) == length*batch_size
     return x.view(batch_size, length).t().contiguous().cuda(), torch.LongTensor(y).cuda()
 
+def create_one_batch_xyz(x, y, z, map2id, oov='<oov>'):
+    oov_id = map2id[oov]
+    x = pad(x)
+    length = len(x[0])
+    batch_size = len(x)
+    x = [ map2id.get(w, oov_id) for seq in x for w in seq ]
+    x = torch.LongTensor(x)
+    assert x.size(0) == length*batch_size
+    return x.view(batch_size, length).t().contiguous().cuda(), torch.LongTensor(y).cuda(), torch.LongTensor(z).cuda()
 
 def create_one_batch_x(x, map2id, oov='<oov>'):
     oov_id = map2id[oov]
@@ -150,6 +161,47 @@ def create_batches(x, y, batch_size, map2id, perm=None, sort=False):
     ))
 
     return batches_x, batches_y
+
+# shuffle training examples and create mini-batches
+def create_batches_xyz(x, y, z, batch_size, map2id, perm=None, sort=False):
+
+    lst = perm or range(len(x))
+
+    # sort sequences based on their length; necessary for SST
+    if sort:
+        lst = sorted(lst, key=lambda i: len(x[i]))
+
+    x = [ x[i] for i in lst ]
+    y = [ y[i] for i in lst ]
+    z = [ z[i] for i in lst ]
+
+
+    sum_len = 0.
+    for ii in x:
+        sum_len += len(ii)
+    batches_x = [ ]
+    batches_y = [ ]
+    batches_z = [ ]
+    size = batch_size
+    nbatch = (len(x)-1) // size + 1
+    for i in range(nbatch):
+        bx, by, bz = create_one_batch_xyz(x[i*size:(i+1)*size], y[i*size:(i+1)*size], z[i*size:(i+1)*size], map2id)
+        batches_x.append(bx)
+        batches_y.append(by)
+        batches_z.append(bz)
+
+    if sort:
+        perm = list(range(nbatch))
+        random.shuffle(perm)
+        batches_x = [ batches_x[i] for i in perm ]
+        batches_y = [ batches_y[i] for i in perm ]
+        batches_z = [ batches_z[i] for i in perm ]
+
+    sys.stdout.write("{} batches, avg sent len: {:.1f}\n".format(
+        nbatch, sum_len/len(x)
+    ))
+
+    return batches_x, batches_y, batches_z
 
 
 # shuffle training examples and create mini-batches
