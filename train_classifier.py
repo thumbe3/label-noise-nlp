@@ -1,6 +1,5 @@
 import sys
 import argparse
-import time
 import random
 import copy
 import numpy as np
@@ -12,6 +11,7 @@ from torch.autograd import Variable
 import matplotlib.pyplot as plt
 import os
 import glob
+import pdb
 
 import dataloader
 import modules
@@ -352,6 +352,7 @@ def train_model(epoch, model, noise_model, optimizer,
         #kl_loss = torch.sum(kl_criterion(log_softmax_criterion(noisy_output), softmax_criterion(clean_output)),axis=1)
         #contrastive_loss = torch.sum((1-2*prob)*kl_loss) # - prob*torch.clamp(kl_loss, min=0, max=1))
         #contrastive_loss = torch.sum((1-prob)*kl_loss - prob*torch.clamp(kl_loss, min=0, max=1))
+        
         if epoch < warmup:
             return torch.zeros(1).cuda()
         contrastive_loss = torch.sum((1-prob)*criterion2(clean_output, y))
