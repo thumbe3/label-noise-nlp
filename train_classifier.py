@@ -52,7 +52,6 @@ def track_training_loss(model, train_x, train_y, bmm_model, epoch):
         for x, y in zip(train_x, train_y):
             data, target = Variable(x), Variable(y)
             prediction = model(data)
-
             prediction = F.log_softmax(prediction, dim=1)
             idx_loss = F.nll_loss(prediction, target, reduction = 'none').detach_()
             all_losses = torch.cat((all_losses, idx_loss.cpu()))
@@ -335,7 +334,7 @@ def train_model(epoch, model, noise_model, optimizer,
             print('Fitting BMM')
             bmm_model, prob, preds = track_training_loss(model, train_x, train_y, bmm_model, epoch)
             prob = torch.round(prob)
-            noise_model.train()
+        noise_model.train()
     
     model.train()
     niter = epoch*len(train_x)
