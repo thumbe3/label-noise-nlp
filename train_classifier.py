@@ -304,7 +304,7 @@ class Model(nn.Module):
 
 
 
-def eval_model(niter, model, input_x, input_y):
+def eval_model(niter, model, noise_model, input_x, input_y):
     model.eval()
     correct = 0.0
     cnt = 0.
@@ -312,6 +312,8 @@ def eval_model(niter, model, input_x, input_y):
         for x, y in zip(input_x, input_y):
             x, y = Variable(x), Variable(y)
             output = model(x)
+            if noise_model:
+                output = noise_model(output)
             pred = output.data.max(1)[1]
             correct += pred.eq(y.data).cpu().sum()
             cnt += y.numel() 
@@ -344,9 +346,7 @@ def train_model(epoch, model, noise_model, optimizer,
     log_softmax_criterion= nn.LogSoftmax()
 
     def contrastive_loss(clean_output, noisy_output, prob, y, epoch, preds):
-        # clean_softmax = softmax_criterion(clean_output)
-        # noisy_softmax = softmax_criterion(noisy_output)
-        # hellinger_loss = torch.sum(torch.sqrt(((torch.sqrt(clean_softmax) - torch.sqrt(noisy_softmax))**2)/2), axis=1)
+
         # contrastive_loss = torch.sum((1-2*prob)*hellinger_loss)
 
         #kl_loss = torch.sum(kl_criterion(log_softmax_criterion(noisy_output), softmax_criterion(clean_output)),axis=1)
@@ -355,7 +355,15 @@ def train_model(epoch, model, noise_model, optimizer,
         
         if epoch < warmup:
             return torch.zeros(1).cuda()
+
+        #clean_softmax = softmax_criterion(clean_output)
+        #noisy_softmax = softmax_criterion(noisy_output)
+        #hellinger_loss = torch.sum(torch.sqrt(((torch.sqrt(clean_softmax) - torch.sqrt(noisy_softmax)) ** 2) / 2),
+        #                           axis=1)
         contrastive_loss = torch.sum((1-prob)*criterion2(clean_output, y))
+        kl_loss = torch.sum(kl_criterion(log_softmax_criterion(noisy_output), softmax_criterion(clean_output)),axis=1)
+        contrastive_loss += torch.sum((1-prob)*kl_loss - prob*torch.clamp(kl_loss, min=0, max=5))
+
         #contrastive_loss += torch.sum((prob)*criterion2(clean_output, preds))
         return contrastive_loss
 
@@ -372,7 +380,7 @@ def train_model(epoch, model, noise_model, optimizer,
     element_loss = []
     cnt=count_var=0
     
-    beta = 0.25
+    beta = 0.05
     
     total_contrast_loss=total_cross_entropy_loss=total_loss=0
     
@@ -395,11 +403,12 @@ def train_model(epoch, model, noise_model, optimizer,
             noisy_output = noise_model(clean_output)
             if epoch < warmup:
                 cross_entropy_loss = criterion(clean_output, y)
-                contrast_loss = contrastive_loss(clean_output, noisy_output, None, y, epoch, None)
+                loss = cross_entropy_loss
+                #contrast_loss = contrastive_loss(clean_output, noisy_output, None, y, epoch, None)
             else:
                 cross_entropy_loss = criterion(noisy_output, y)
                 contrast_loss = contrastive_loss(clean_output, noisy_output, p, y, epoch, preds_batch)
-            loss = cross_entropy_loss + beta*contrast_loss
+                loss = cross_entropy_loss + beta*contrast_loss
         else:
             cross_entropy_loss = criterion(clean_output, y)
             loss = cross_entropy_loss
@@ -409,13 +418,13 @@ def train_model(epoch, model, noise_model, optimizer,
         loss.backward()
         optimizer.step()
         
-        if noise_model:
-            total_contrast_loss+=contrast_loss.item()
-        total_cross_entropy_loss+=cross_entropy_loss.item()
-        total_loss+=loss.item()
+        if noise_model and epoch >= warmup:
+            total_contrast_loss += contrast_loss.item()
+        total_cross_entropy_loss += cross_entropy_loss.item()
+        total_loss += loss.item()
         
 
-    test_acc = eval_model(niter, model, test_x, test_y)
+    test_acc = eval_model(niter, model, noise_model, test_x, test_y)
 
     print("Epoch={} train_loss={:.6f} contrast_loss={:.6f} CE_loss={:.6f} dev_acc={:.6f}\n".format(
         epoch,
@@ -451,8 +460,8 @@ def create_gif(frames, fname='hist.gif'):
 
 
 def plot_histogram(losses, labels, epoch):
-    clean = [x for x,y in zip(losses,labels) if y==0]
-    noisy = [x for x,y in zip(losses,labels) if y==1]
+    clean = [x for x,y in zip(losses, labels) if y==0]
+    noisy = [x for x,y in zip(losses, labels) if y==1]
 
     plt.figure()
     hist, bins = np.histogram(clean, bins=50)
@@ -465,7 +474,7 @@ def plot_histogram(losses, labels, epoch):
     center = (bins[:-1] + bins[1:]) / 2
     plt.bar(center, hist, align='center', width=width, color='red')
 
-    if epoch//10==0:
+    if epoch//10 == 0:
         epoch = "0"+str(epoch)
     else:
         epoch = str(epoch)
@@ -475,14 +484,14 @@ def plot_histogram(losses, labels, epoch):
     a = args.dataset.split('/')
     if len(a[-1])==0:
         a[-1] = a[-2]
-    folder = os.path.join('figures',a[-1])
+    folder = os.path.join('figures', a[-1])
     if not os.path.isdir(folder):
         os.mkdir(folder)
-    folder = os.path.join('figures',a[-1],'pngs')
+    folder = os.path.join('figures', a[-1], 'pngs')
     if not os.path.isdir(folder):
         os.mkdir(folder)
 
-    fname = os.path.join(folder,'hist_%s.png'%epoch)
+    fname = os.path.join(folder, 'hist_%s.png'%epoch)
 
     plt.show()
     plt.savefig(fname)
@@ -519,7 +528,7 @@ def main(args):
         bmm_model = None
         params = filter(lambda x: x.requires_grad, list(model.parameters()))
     else:
-        noise_model = Feedforward(nclasses, 10, nclasses).cuda()
+        noise_model = Feedforward(nclasses, 5, nclasses).cuda()
         bmm_model = BetaMixture1D(max_iters=10)
         params = filter(lambda x: x.requires_grad, list(model.parameters()) + list(noise_model.parameters()))
 
@@ -591,12 +600,12 @@ def main(args):
         frames.append(plot_histogram(element_loss, train_noise, epoch))
         create_gif(frames)
     
-        test_acc = eval_model(args.max_epoch, best_model, test_x, test_y)
+        test_acc = eval_model(args.max_epoch, best_model, None, test_x, test_y)
         print("Best Model Test Acc.: {:.6f}\n".format(
             test_acc
         ))
 
-        test_acc = eval_model(args.max_epoch, model, test_x, test_y)
+        test_acc = eval_model(args.max_epoch, model, None, test_x, test_y)
         print("Latest Model Test Acc.: {:.6f}\n\n".format(
             test_acc
         ))
