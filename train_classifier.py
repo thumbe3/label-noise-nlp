@@ -307,17 +307,23 @@ def eval_model(niter, model, noise_model, input_x, input_y):
     model.eval()
     correct = 0.0
     cnt = 0.
+    predictions = torch.Tensor()
+
     with torch.no_grad():
         for x, y in zip(input_x, input_y):
             x, y = Variable(x), Variable(y)
             output = model(x)
+            prediction = F.log_softmax(output, dim=1)
+            predictions = torch.cat((predictions, prediction.cpu()))
             if noise_model:
                 output = noise_model(output)
             pred = output.data.max(1)[1]
             correct += pred.eq(y.data).cpu().sum()
-            cnt += y.numel() 
+            cnt += y.numel()
+
     model.train()
-    return correct.item()/cnt
+    _, predictions = torch.max(predictions, axis=1)
+    return correct.item()/cnt, predictions.cuda()
 
 
 
@@ -334,8 +340,9 @@ def train_model(epoch, model, noise_model, optimizer,
             print('Fitting BMM')
             bmm_model, prob, preds = track_training_loss(model, train_x, train_y, bmm_model, epoch)
             prob = torch.round(prob)
-        noise_model.train()
-    
+            noise_model.train()
+        else:
+            _, preds = eval_model(epoch, model, noise_model, train_x, train_y)
     model.train()
     niter = epoch*len(train_x)
     criterion = nn.CrossEntropyLoss()
@@ -344,7 +351,7 @@ def train_model(epoch, model, noise_model, optimizer,
     softmax_criterion= nn.Softmax()
     log_softmax_criterion= nn.LogSoftmax()
 
-    def contrastive_loss(clean_output, noisy_output, prob, y, epoch, preds):
+    def contrastive_loss(clean_output, noisy_output, prob, y, epoch, preds, true_noise):
 
         # contrastive_loss = torch.sum((1-2*prob)*hellinger_loss)
 
@@ -360,10 +367,12 @@ def train_model(epoch, model, noise_model, optimizer,
         #hellinger_loss = torch.sum(torch.sqrt(((torch.sqrt(clean_softmax) - torch.sqrt(noisy_softmax)) ** 2) / 2),
         #                           axis=1)
         contrastive_loss = torch.sum((1-prob)*criterion2(clean_output, y))
-        kl_loss = torch.sum(kl_criterion(log_softmax_criterion(noisy_output), softmax_criterion(clean_output)),axis=1)
-        contrastive_loss += torch.sum((1-prob)*kl_loss - prob*torch.clamp(kl_loss, min=0, max=5))
+        #contrastive_loss = torch.sum((1 - true_noise) * criterion2(clean_output, y))
+        #kl_loss = torch.sum(kl_criterion(log_softmax_criterion(noisy_output), softmax_criterion(clean_output)),axis=1)
+        #contrastive_loss += torch.sum((1-prob)*kl_loss - prob*torch.clamp(kl_loss, min=0, max=5))
 
-        #contrastive_loss += torch.sum((prob)*criterion2(clean_output, preds))
+        contrastive_loss += torch.sum((prob)*criterion2(clean_output, preds))
+        #contrastive_loss += torch.sum((true_noise) * criterion2(clean_output, preds))
         return contrastive_loss
 
     '''
@@ -379,7 +388,7 @@ def train_model(epoch, model, noise_model, optimizer,
     element_loss = []
     cnt=count_var=0
     
-    beta = 0.05
+    beta = 0.02
     
     total_contrast_loss=total_cross_entropy_loss=total_loss=0
     
@@ -389,7 +398,7 @@ def train_model(epoch, model, noise_model, optimizer,
         niter += 1
         cnt += 1
         model.zero_grad()
-        x, y = Variable(x), Variable(y)
+        x, y , z= Variable(x), Variable(y), Variable(z)
         clean_output = model(x)
 
         if noise_model is not None:
@@ -406,7 +415,7 @@ def train_model(epoch, model, noise_model, optimizer,
                 #contrast_loss = contrastive_loss(clean_output, noisy_output, None, y, epoch, None)
             else:
                 cross_entropy_loss = criterion(noisy_output, y)
-                contrast_loss = contrastive_loss(clean_output, noisy_output, p, y, epoch, preds_batch)
+                contrast_loss = contrastive_loss(clean_output, noisy_output, p, y, epoch, preds_batch, z)
                 loss = cross_entropy_loss + beta*contrast_loss
         else:
             cross_entropy_loss = criterion(clean_output, y)
@@ -423,7 +432,7 @@ def train_model(epoch, model, noise_model, optimizer,
         total_loss += loss.item()
         
 
-    test_acc = eval_model(niter, model, noise_model, test_x, test_y)
+    test_acc, _ = eval_model(niter, model, noise_model, test_x, test_y)
 
     print("Epoch={} train_loss={:.6f} contrast_loss={:.6f} CE_loss={:.6f} dev_acc={:.6f}\n".format(
         epoch,
@@ -527,7 +536,7 @@ def main(args):
         bmm_model = None
         params = filter(lambda x: x.requires_grad, list(model.parameters()))
     else:
-        noise_model = Feedforward(nclasses, 5, nclasses).cuda()
+        noise_model = Feedforward(nclasses, 10, nclasses).cuda()
         bmm_model = BetaMixture1D(max_iters=10)
         params = filter(lambda x: x.requires_grad, list(model.parameters()) + list(noise_model.parameters()))
 
@@ -599,12 +608,12 @@ def main(args):
         frames.append(plot_histogram(element_loss, train_noise, epoch))
         create_gif(frames)
     
-        test_acc = eval_model(args.max_epoch, best_model, None, test_x, test_y)
+        test_acc, _ = eval_model(args.max_epoch, best_model, None, test_x, test_y)
         print("Best Model Test Acc.: {:.6f}\n".format(
             test_acc
         ))
 
-        test_acc = eval_model(args.max_epoch, model, None, test_x, test_y)
+        test_acc, _ = eval_model(args.max_epoch, model, None, test_x, test_y)
         print("Latest Model Test Acc.: {:.6f}\n\n".format(
             test_acc
         ))
