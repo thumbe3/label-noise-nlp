@@ -1,4 +1,5 @@
 #!/bin/bash
+set -x
 read -p "noise percentage: " perc
 read -p "baseline (Y/N): " baseline
 if [ $baseline = 'Y' ] ||  [ $baseline = 'yes' ] ||  [ $baseline = 'Yes' ]

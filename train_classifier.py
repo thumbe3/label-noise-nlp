@@ -51,9 +51,9 @@ def track_training_loss(model, train_x, train_y, bmm_model, epoch):
 
         for x, y in zip(train_x, train_y):
             data, target = Variable(x), Variable(y)
-            prediction = model(data)
-            prediction = F.log_softmax(prediction, dim=1)
-            idx_loss = F.nll_loss(prediction, target, reduction = 'none').detach_()
+            clean_output, noisy_output = model(data)
+            prediction = F.log_softmax(clean_output, dim=1)
+            idx_loss = F.nll_loss(prediction, target, reduction='none').detach_()
             all_losses = torch.cat((all_losses, idx_loss.cpu()))
             predictions = torch.cat((predictions, prediction.cpu()))
             
@@ -209,27 +209,6 @@ class BetaMixture1D(object):
         return 'BetaMixture1D(w={}, a={}, b={})'.format(self.weight, self.alphas, self.betas)
 
 
-class Feedforward(torch.nn.Module):
-    def __init__(self, input_size, hidden_size, output_size):
-        super(Feedforward, self).__init__()
-        self.input_size = input_size
-        self.hidden_size  = hidden_size
-        self.output_size = output_size
-        self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
-        self.relu = torch.nn.ReLU()
-        self.fc3 = torch.nn.Linear(self.hidden_size, self.output_size)
-        #self.fc3 = torch.nn.Linear(self.input_size, self.output_size)
-        
-
-    def forward(self, x):
-        hidden = self.fc1(x)
-        relu = self.relu(hidden)
-        output = self.fc3(relu)
-        #output = self.fc3(x)
-        return output
-
-
-
 class Model(nn.Module):
     def __init__(self, embedding, hidden_size=600, depth=2, dropout=0.3, cnn=False, nclasses=2):
         super(Model, self).__init__()
@@ -246,7 +225,7 @@ class Model(nn.Module):
                 widths = [3,4,5],
                 filters=hidden_size
             )
-            d_out = 3*hidden_size
+            self.d_out = 3*hidden_size
         else:
             self.encoder = nn.LSTM(
                 self.emb_layer.n_d,
@@ -256,8 +235,8 @@ class Model(nn.Module):
                 # batch_first=True,
                 bidirectional=True
             )
-            d_out = hidden_size
-        self.out = nn.Linear(d_out, nclasses)
+            self.d_out = hidden_size
+        self.out = nn.Linear(self.d_out, nclasses)
 
     def forward(self, input):
         if self.cnn:
@@ -275,7 +254,9 @@ class Model(nn.Module):
             output = torch.max(output, dim=0)[0].squeeze()
 
         output = self.drop(output)
-        return self.out(output)
+        output = self.out(output)
+
+        return output, output
 
     def text_pred(self, text, batch_size=32):
         batches_x = dataloader.create_batches_x(
@@ -302,47 +283,91 @@ class Model(nn.Module):
         return torch.cat(outs, dim=0)
 
 
+class Feedforward(torch.nn.Module):
+    def __init__(self, input_size, hidden_size, output_size):
+        super(Feedforward, self).__init__()
+        self.input_size = input_size
+        self.hidden_size  = hidden_size
+        self.output_size = output_size
+        self.fc1 = torch.nn.Linear(self.input_size, self.hidden_size)
+        self.relu = torch.nn.ReLU()
+        self.fc3 = torch.nn.Linear(self.hidden_size, self.output_size)
+        
+    def forward(self, x):
+        hidden = self.fc1(x)
+        relu = self.relu(hidden)
+        output = self.fc3(relu)
+        return output
 
-def eval_model(niter, model, noise_model, input_x, input_y):
+
+class Model_NM(Model):
+
+    def __init__(self, embedding, hidden_size=600, depth=2, dropout=0.3, cnn=False, nclasses=2):
+        super(Model_NM, self).__init__(embedding, hidden_size, depth, dropout, cnn, nclasses)
+
+        #NM_inp_size = nclasses + self.d_out
+        NM_inp_size = nclasses
+        NM_hidden_size = int(NM_inp_size*2)
+
+        self.NM = Feedforward(NM_inp_size, NM_hidden_size, nclasses)
+
+        # print(NM_inp_size, NM_hidden_size)
+
+
+    def forward(self, input):
+        if self.cnn:
+            input = input.t()
+        emb = self.emb_layer(input)
+        emb = self.drop(emb)
+
+        if not self.cnn:
+            self.encoder.flatten_parameters()   
+
+        if self.cnn:
+            output = self.encoder(emb)
+        else:
+            output, hidden = self.encoder(emb)
+            output = torch.max(output, dim=0)[0].squeeze()
+
+        output = self.drop(output)
+        clean_output = self.out(output)
+
+        #noisy_output = self.NM(torch.cat((output, clean_output), dim=1))
+        noisy_output = self.NM(clean_output)
+        
+        return clean_output, noisy_output
+
+
+def eval_model(niter, model, input_x, input_y, noisy=False):
     model.eval()
     correct = 0.0
     cnt = 0.
-    predictions = torch.Tensor()
 
     with torch.no_grad():
         for x, y in zip(input_x, input_y):
             x, y = Variable(x), Variable(y)
-            output = model(x)
-            prediction = F.log_softmax(output, dim=1)
-            predictions = torch.cat((predictions, prediction.cpu()))
-            if noise_model:
-                output = noise_model(output)
+            clean_output, noisy_output = model(x)
+            output = noisy_output if noisy else clean_output
             pred = output.data.max(1)[1]
             correct += pred.eq(y.data).cpu().sum()
             cnt += y.numel()
-
     model.train()
-    _, predictions = torch.max(predictions, axis=1)
-    return correct.item()/cnt, predictions.cuda()
+
+    return correct.item()/cnt
 
 
 
-def train_model(epoch, model, noise_model, optimizer,
-        train_x, train_y,
-        test_x, test_y,
+def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
         best_test, save_path, bmm_model, nclasses, train_noise=None, prob=None, preds=None):
     
-    warmup = 6
+    warmup = 4
 
-    if noise_model:
-        # if epoch == warmup:
+    if bmm_model is not None:
         if epoch == warmup:
             print('Fitting BMM')
             bmm_model, prob, preds = track_training_loss(model, train_x, train_y, bmm_model, epoch)
-            prob = torch.round(prob)
-            noise_model.train()
-        else:
-            _, preds = eval_model(epoch, model, noise_model, train_x, train_y)
+            #prob = torch.round(prob)
+
     model.train()
     niter = epoch*len(train_x)
     criterion = nn.CrossEntropyLoss()
@@ -350,6 +375,7 @@ def train_model(epoch, model, noise_model, optimizer,
     kl_criterion = nn.KLDivLoss(reduction="none")
     softmax_criterion= nn.Softmax()
     log_softmax_criterion= nn.LogSoftmax()
+
 
     def contrastive_loss(clean_output, noisy_output, prob, y, epoch, preds, true_noise):
 
@@ -359,18 +385,16 @@ def train_model(epoch, model, noise_model, optimizer,
         #contrastive_loss = torch.sum((1-2*prob)*kl_loss) # - prob*torch.clamp(kl_loss, min=0, max=1))
         #contrastive_loss = torch.sum((1-prob)*kl_loss - prob*torch.clamp(kl_loss, min=0, max=1))
         
-        if epoch < warmup:
-            return torch.zeros(1).cuda()
-
         #clean_softmax = softmax_criterion(clean_output)
         #noisy_softmax = softmax_criterion(noisy_output)
         #hellinger_loss = torch.sum(torch.sqrt(((torch.sqrt(clean_softmax) - torch.sqrt(noisy_softmax)) ** 2) / 2),
         #                           axis=1)
         contrastive_loss = torch.sum((1-prob)*criterion2(clean_output, y))
+        _, preds = torch.max(clean_output, axis=1)
         #contrastive_loss = torch.sum((1 - true_noise) * criterion2(clean_output, y))
         #kl_loss = torch.sum(kl_criterion(log_softmax_criterion(noisy_output), softmax_criterion(clean_output)),axis=1)
         #contrastive_loss += torch.sum((1-prob)*kl_loss - prob*torch.clamp(kl_loss, min=0, max=5))
-
+        #pdb.set_trace()
         contrastive_loss += torch.sum((prob)*criterion2(clean_output, preds))
         #contrastive_loss += torch.sum((true_noise) * criterion2(clean_output, preds))
         return contrastive_loss
@@ -388,32 +412,30 @@ def train_model(epoch, model, noise_model, optimizer,
     element_loss = []
     cnt=count_var=0
     
-    beta = 0.02
+    #if not epoch+1== warmup:
+    #    beta = 1/(epoch-warmup+1)
+    beta=0.5
     
     total_contrast_loss=total_cross_entropy_loss=total_loss=0
     
-    # print(len(train_x), prob.size())
-    # exit()
     for x, y, z in zip(train_x, train_y, train_noise):
         niter += 1
         cnt += 1
         model.zero_grad()
         x, y , z= Variable(x), Variable(y), Variable(z)
-        clean_output = model(x)
+        clean_output, noisy_output = model(x)
 
-        if noise_model is not None:
-            if epoch >= warmup:
+        if bmm_model is not None:
+            if epoch < warmup:
+                cross_entropy_loss = criterion(clean_output, y)
+                loss = cross_entropy_loss
+            else:
                 p = prob[count_var:count_var+x.size()[1]]
                 preds_batch = preds[count_var:count_var+x.size()[1]]
                 #p = z
                 count_var+=x.size()[1]
                 p = Variable(p)
-            noisy_output = noise_model(clean_output)
-            if epoch < warmup:
-                cross_entropy_loss = criterion(clean_output, y)
-                loss = cross_entropy_loss
-                #contrast_loss = contrastive_loss(clean_output, noisy_output, None, y, epoch, None)
-            else:
+
                 cross_entropy_loss = criterion(noisy_output, y)
                 contrast_loss = contrastive_loss(clean_output, noisy_output, p, y, epoch, preds_batch, z)
                 loss = cross_entropy_loss + beta*contrast_loss
@@ -426,13 +448,13 @@ def train_model(epoch, model, noise_model, optimizer,
         loss.backward()
         optimizer.step()
         
-        if noise_model and epoch >= warmup:
+        if bmm_model is not None and epoch >= warmup:
             total_contrast_loss += contrast_loss.item()
         total_cross_entropy_loss += cross_entropy_loss.item()
         total_loss += loss.item()
         
 
-    test_acc, _ = eval_model(niter, model, noise_model, test_x, test_y)
+    test_acc = eval_model(niter, model, dev_x, dev_y, noisy=True)
 
     print("Epoch={} train_loss={:.6f} contrast_loss={:.6f} CE_loss={:.6f} dev_acc={:.6f}\n".format(
         epoch,
@@ -529,24 +551,17 @@ def main(args):
 
     nclasses = max(train_y) + 1
     print("NUM CLASSES: "+ str(nclasses))
-    model = Model(args.embedding, args.d, args.depth, args.dropout, args.cnn, nclasses=nclasses).cuda()
     
     if args.baseline:
-        noise_model = None 
+        model = Model(args.embedding, args.d, args.depth, args.dropout, args.cnn, nclasses=nclasses).cuda()
         bmm_model = None
-        params = filter(lambda x: x.requires_grad, list(model.parameters()))
     else:
-        noise_model = Feedforward(nclasses, 10, nclasses).cuda()
+        model = Model_NM(args.embedding, args.d, args.depth, args.dropout, args.cnn, nclasses=nclasses).cuda()
         bmm_model = BetaMixture1D(max_iters=10)
-        params = filter(lambda x: x.requires_grad, list(model.parameters()) + list(noise_model.parameters()))
+        
+    params = filter(lambda x: x.requires_grad, list(model.parameters()))
 
     optimizer = optim.Adam(params, lr = args.lr)
-
-    # train_x, train_y = dataloader.create_batches(
-    #     train_x, train_y,
-    #     args.batch_size,
-    #     model.word2id,
-    # )
 
     train_x, train_y, train_noise_batches = dataloader.create_batches_xyz(
         train_x, train_y, train_noise,
@@ -584,7 +599,7 @@ def main(args):
     prob = None
     preds = None
     for epoch in range(args.max_epoch):
-        curr_dev, element_loss, prob, preds = train_model(epoch, model, noise_model, optimizer,
+        curr_dev, element_loss, prob, preds = train_model(epoch, model, optimizer,
             train_x, train_y,
             dev_x, dev_y,
             curr_best_dev, args.save_path,
@@ -592,7 +607,7 @@ def main(args):
         )
 
         if curr_best_dev <= curr_dev:
-            print('New best model found', curr_best_dev, curr_dev, curr_best_dev<=curr_dev)
+            #print('New best model found', curr_best_dev, curr_dev, curr_best_dev<=curr_dev)
             curr_best_dev=curr_dev
             early_stopping=0
             best_model=copy.deepcopy(model)
@@ -608,17 +623,17 @@ def main(args):
         frames.append(plot_histogram(element_loss, train_noise, epoch))
         create_gif(frames)
     
-        test_acc, _ = eval_model(args.max_epoch, best_model, None, test_x, test_y)
+        test_acc = eval_model(args.max_epoch, best_model, test_x, test_y, noisy=False)
         print("Best Model Test Acc.: {:.6f}\n".format(
             test_acc
         ))
 
-        test_acc, _ = eval_model(args.max_epoch, model, None, test_x, test_y)
+        test_acc = eval_model(args.max_epoch, model, test_x, test_y, noisy=False)
         print("Latest Model Test Acc.: {:.6f}\n\n".format(
             test_acc
         ))
 
-        if noise_model:
+        if bmm_model is not None:
             if epoch//10==0:
                 e = "0"+str(epoch)
             else:
