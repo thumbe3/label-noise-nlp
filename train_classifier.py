@@ -307,7 +307,7 @@ class Model_NM(Model):
 
         #NM_inp_size = nclasses + self.d_out
         NM_inp_size = nclasses
-        NM_hidden_size = int(NM_inp_size*2)
+        NM_hidden_size = int(NM_inp_size*4)
 
         self.NM = Feedforward(NM_inp_size, NM_hidden_size, nclasses)
 
@@ -375,6 +375,7 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
     kl_criterion = nn.KLDivLoss(reduction="none")
     softmax_criterion= nn.Softmax()
     log_softmax_criterion= nn.LogSoftmax()
+    #pdb.set_trace()
 
 
     def contrastive_loss(clean_output, noisy_output, prob, y, epoch, preds, true_noise):
@@ -414,8 +415,9 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
     
     #if not epoch+1== warmup:
     #    beta = 1/(epoch-warmup+1)
-    beta=0.5
-    
+    beta = 0.5
+    lamda = 0.2
+
     total_contrast_loss=total_cross_entropy_loss=total_loss=0
     
     for x, y, z in zip(train_x, train_y, train_noise):
@@ -437,6 +439,7 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
                 p = Variable(p)
 
                 cross_entropy_loss = criterion(noisy_output, y)
+                #cross_entropy_loss += lamda* sum([p.pow(2).sum() for p in model.NM.parameters()])  #regularization loss
                 contrast_loss = contrastive_loss(clean_output, noisy_output, p, y, epoch, preds_batch, z)
                 loss = cross_entropy_loss + beta*contrast_loss
         else:
