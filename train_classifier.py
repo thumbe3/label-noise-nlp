@@ -73,7 +73,7 @@ def track_training_loss(model, train_x, train_y, bmm_model, epoch):
     loss_tr[loss_tr <= 0] = 10e-4
     
     #FIT BMM on loss_tr
-    # bmm_model = BetaMixture1D(max_iters=30)
+    bmm_model = BetaMixture1D(max_iters=30)
     bmm_model.fit(loss_tr)
     bmm_model.create_lookup(1)
     
@@ -81,14 +81,13 @@ def track_training_loss(model, train_x, train_y, bmm_model, epoch):
         epoch = "0"+str(epoch)
     else:
         epoch = str(epoch)
-
-    a = args.dataset.split('/')
-    if len(a[-1])==0:
-        a[-1] = a[-2]
-    folder = os.path.join('figures',a[-1])
+    
+    global results_dir
+    
+    folder = os.path.join(results_dir)
     if not os.path.isdir(folder):
         os.mkdir(folder)
-    folder = os.path.join('figures',a[-1],'pngs')
+    folder = os.path.join(results_dir,'pngs')
     if not os.path.isdir(folder):
         os.mkdir(folder)
 
@@ -174,7 +173,9 @@ class BetaMixture1D(object):
             self.alphas[1], self.betas[1] = fit_beta_weighted(x, r[1])
             self.weight = r.sum(axis=1)
             self.weight /= self.weight.sum()
-
+        print("Fitted BMM Means")
+        print(self.alphas[0]/(self.alphas[0]+self.betas[0]), self.alphas[1]/(self.alphas[1]+self.betas[1]))
+        print(-self.alphas[0]/(self.alphas[0]+self.betas[0]) +  self.alphas[1]/(self.alphas[1]+self.betas[1]))
         return self
 
     def predict(self, x):
@@ -210,7 +211,7 @@ class BetaMixture1D(object):
 
 
 class Model(nn.Module):
-    def __init__(self, embedding, hidden_size=600, depth=2, dropout=0.3, cnn=False, nclasses=2):
+    def __init__(self, embedding, hidden_size=800, depth=6, dropout=0.3, cnn=False, nclasses=2):
         super(Model, self).__init__()
         self.cnn = cnn
         self.drop = nn.Dropout(dropout)
@@ -281,6 +282,15 @@ class Model(nn.Module):
                 outs.append(F.softmax(self.out(output), dim=-1))
 
         return torch.cat(outs, dim=0)
+    
+    def get_n_params(self):
+        pp=0
+        for p in list(self.parameters()):
+            nn=1
+            for s in list(p.size()):
+                nn = nn*s
+            pp += nn
+        return pp
 
 
 class Feedforward(torch.nn.Module):
@@ -355,19 +365,51 @@ def eval_model(niter, model, input_x, input_y, noisy=False):
 
     return correct.item()/cnt
 
+def eval_model_noisy(model, input_x, input_y, input_noise):
+    model.eval()
+    correct = 0.0
+    cnt = 0.    
+    with torch.no_grad():
+        for x, y, z in zip(input_x, input_y, input_noise):
+            x, y, z = Variable(x), Variable(y), z.cpu().numpy()
+            clean_output, _ = model(x)
+            pred = clean_output.cpu().data.max(1)[1]
+            #print(pred, y,z)
+            correct += np.sum(pred.eq(y.cpu().data).numpy()*z)
+            cnt += np.sum(z)
+    model.train()
+    #print(correct, cnt, correct/cnt)
+
+    return correct/cnt
+
 
 
 def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
-        best_test, save_path, bmm_model, nclasses, train_noise=None, prob=None, preds=None):
-    
-    warmup = 4
+        best_test, save_path, bmm_model, nclasses, train_noise=None, train_orig_labels=None, prob=None, preds=None, warmup=None):
 
     if bmm_model is not None:
         if epoch == warmup:
             print('Fitting BMM')
             bmm_model, prob, preds = track_training_loss(model, train_x, train_y, bmm_model, epoch)
-            #prob = torch.round(prob)
-
+            prob2 = torch.round(prob)
+            count_var=0
+            correct=0
+            correct_noisy=0
+            print(np.sum(prob.cpu().numpy()),prob.size())
+            for z in train_noise:
+                p = prob2[count_var:count_var+train_x[0].size()[1]]
+                count_var+= train_x[0].size()[1]
+                correct += np.sum(p.data.eq(z.data).cpu().numpy())
+                correct_noisy += np.sum(p.data.eq(z.data).cpu().numpy()*z.cpu().numpy())
+            print("BMM correctly fits %f %% of all training points."%(correct/count_var))
+            print("BMM correctly fits %f %% of noisy training points."%(correct_noisy/count_var))
+                        
+#     bootstrap_acc = eval_model_noisy(model, train_x, train_orig_labels, train_noise)
+#     print("Noisy Points accuracy on original label: %f"%bootstrap_acc)
+#     bootstrap_acc = eval_model_noisy(model, train_x, train_y, train_noise)
+#     print("Noisy Points accuracy on noisy label: %f"%bootstrap_acc)
+    
+    
     model.train()
     niter = epoch*len(train_x)
     criterion = nn.CrossEntropyLoss()
@@ -390,14 +432,16 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
         #noisy_softmax = softmax_criterion(noisy_output)
         #hellinger_loss = torch.sum(torch.sqrt(((torch.sqrt(clean_softmax) - torch.sqrt(noisy_softmax)) ** 2) / 2),
         #                           axis=1)
-        contrastive_loss = torch.sum((1-prob)*criterion2(clean_output, y))
-        _, preds = torch.max(clean_output, axis=1)
+        
         #contrastive_loss = torch.sum((1 - true_noise) * criterion2(clean_output, y))
         #kl_loss = torch.sum(kl_criterion(log_softmax_criterion(noisy_output), softmax_criterion(clean_output)),axis=1)
         #contrastive_loss += torch.sum((1-prob)*kl_loss - prob*torch.clamp(kl_loss, min=0, max=5))
         #pdb.set_trace()
-        contrastive_loss += torch.sum((prob)*criterion2(clean_output, preds))
         #contrastive_loss += torch.sum((true_noise) * criterion2(clean_output, preds))
+        
+        contrastive_loss = torch.sum((1-prob)*criterion2(clean_output, y))
+        #_, preds = torch.max(clean_output, axis=1)
+        #contrastive_loss += torch.sum((prob)*criterion2(clean_output, preds))
         return contrastive_loss
 
     '''
@@ -415,8 +459,8 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
     
     #if not epoch+1== warmup:
     #    beta = 1/(epoch-warmup+1)
-    beta = 0.5
-    lamda = 0.2
+    beta = 10
+    #lamda = 0.2
 
     total_contrast_loss=total_cross_entropy_loss=total_loss=0
     
@@ -467,7 +511,7 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
 
     if save_path:
         torch.save(model.state_dict(), os.path.join(save_path,"best_model.bin"))
-    return test_acc, element_loss, prob, preds
+    return test_acc, element_loss, prob, preds, bmm_model
 
 
 def save_data(data, labels, path, type='train'):
@@ -478,10 +522,7 @@ def save_data(data, labels, path, type='train'):
 
 def create_gif(frames, fname='hist.gif'):
     frames = [Image.open(i) for i in frames]
-    a = args.dataset.split('/')
-    if len(a[-1])==0:
-        a[-1] = a[-2]
-    folder = os.path.join('figures',a[-1])
+    folder = os.path.join(results_dir)
     if not os.path.isdir(folder):
         os.mkdir(folder)
 
@@ -492,20 +533,34 @@ def create_gif(frames, fname='hist.gif'):
                duration=400, loop=0)
 
 
-def plot_histogram(losses, labels, epoch):
+def plot_histogram(losses, labels, epoch, bmm_model):
     clean = [x for x,y in zip(losses, labels) if y==0]
     noisy = [x for x,y in zip(losses, labels) if y==1]
 
-    plt.figure()
+    fig, (ax1, ax2, ax3) = plt.subplots(1,3,figsize=(14,6))
+    
     hist, bins = np.histogram(clean, bins=50)
     width = 0.7 * (bins[1] - bins[0])
     center = (bins[:-1] + bins[1:]) / 2
-    plt.bar(center, hist, align='center', width=width)
+    ax1.bar(center, hist, align='center', width=width)
 
     hist, bins = np.histogram(noisy, bins=50)
     width = 0.7 * (bins[1] - bins[0])
     center = (bins[:-1] + bins[1:]) / 2
-    plt.bar(center, hist, align='center', width=width, color='red')
+    ax1.bar(center, hist, align='center', width=width, color='red')
+    
+    hist, bins = np.histogram(losses, bins=50)
+    width = 0.7 * (bins[1] - bins[0])
+    center = (bins[:-1] + bins[1:]) / 2
+    ax2.bar(center, hist, align='center', width=width, color='green')
+    
+    if bmm_model is not None:
+        x = np.linspace(0, 1, 100)
+        ax3.plot(x, bmm_model.weighted_likelihood(x, 0), label='negative')
+        ax3.plot(x, bmm_model.weighted_likelihood(x, 1), label='positive')
+#         ax3.plot(x, bmm_model.probability(x), lw=2, label='mixture')
+        ax3.legend()
+
 
     if epoch//10 == 0:
         epoch = "0"+str(epoch)
@@ -514,13 +569,10 @@ def plot_histogram(losses, labels, epoch):
 
     plt.title('Epoch %s'%epoch)
 
-    a = args.dataset.split('/')
-    if len(a[-1])==0:
-        a[-1] = a[-2]
-    folder = os.path.join('figures', a[-1])
+    folder = os.path.join(results_dir)
     if not os.path.isdir(folder):
         os.mkdir(folder)
-    folder = os.path.join('figures', a[-1], 'pngs')
+    folder = os.path.join(results_dir, 'pngs')
     if not os.path.isdir(folder):
         os.mkdir(folder)
 
@@ -535,21 +587,20 @@ def plot_histogram(losses, labels, epoch):
 
 def main(args):
 
-    a = args.dataset.split('/')
-    if len(a[-1])==0:
-        a[-1] = a[-2]
-    folder = os.path.join('figures',a[-1])
+    folder = os.path.join(results_dir)
     if not os.path.isdir(folder):
         os.mkdir(folder)
-    folder = os.path.join('figures',a[-1],'pngs')
+    folder = os.path.join(results_dir,'pngs')
     if not os.path.isdir(folder):
         os.mkdir(folder)
 
     for file in glob.glob(os.path.join(folder, '*.png')):
         os.remove(file)
 
-    train_x, train_y, train_noise = dataloader.read_corpus(os.path.join(args.dataset,"train.tsv"), shuffle=True, get_noise=True)
-    dev_x, dev_y, dev_noise = dataloader.read_corpus(os.path.join(args.dataset,"dev.tsv"), shuffle=True, get_noise=True)
+    train_x, train_y, train_noise, train_orig_labels = dataloader.read_corpus(os.path.join(args.dataset,"train.tsv"), shuffle=True, get_noise=True)
+#     print(len(train_x), len(train_y), len(train_noise), len(train_orig_labels))
+#     exit()
+    dev_x, dev_y, dev_noise, dev_orig_labels = dataloader.read_corpus(os.path.join(args.dataset,"dev.tsv"), shuffle=True, get_noise=True)
     test_x, test_y = dataloader.read_corpus(os.path.join(args.dataset,"test.tsv"), shuffle=True)
 
     nclasses = max(train_y) + 1
@@ -563,14 +614,20 @@ def main(args):
         bmm_model = BetaMixture1D(max_iters=10)
         
     params = filter(lambda x: x.requires_grad, list(model.parameters()))
+    
+    print(model)
+    print('Number of parameters:',model.get_n_params())
 
     optimizer = optim.Adam(params, lr = args.lr)
 
-    train_x, train_y, train_noise_batches = dataloader.create_batches_xyz(
-        train_x, train_y, train_noise,
+    train_x, train_y, train_noise_batches, train_orig_labels_batches = dataloader.create_batches_xyz(
+        train_x, train_y, train_noise, train_orig_labels,
         args.batch_size,
         model.word2id,
     )
+    
+    #print(train_y[0], train_noise_batches[0], train_orig_labels_batches[0])
+    #exit()
     
     dev_x, dev_y = dataloader.create_batches(
         dev_x, dev_y,
@@ -589,24 +646,21 @@ def main(args):
     
     frames = []
     bmm_frames = []
-    a = args.dataset.split('/')
-    if len(a[-1])==0:
-        a[-1] = a[-2]
-    folder = os.path.join('figures',a[-1])
+    folder = os.path.join(results_dir)
     if not os.path.isdir(folder):
         os.mkdir(folder)
-    folder = os.path.join('figures',a[-1],'pngs')
+    folder = os.path.join(results_dir,'pngs')
     if not os.path.isdir(folder):
         os.mkdir(folder)
 
     prob = None
     preds = None
     for epoch in range(args.max_epoch):
-        curr_dev, element_loss, prob, preds = train_model(epoch, model, optimizer,
+        curr_dev, element_loss, prob, preds, bmm_model = train_model(epoch, model, optimizer,
             train_x, train_y,
             dev_x, dev_y,
             curr_best_dev, args.save_path,
-            bmm_model, nclasses, train_noise_batches, prob=prob, preds=preds
+            bmm_model, nclasses, train_noise_batches, train_orig_labels_batches, prob=prob, preds=preds, warmup=args.warmup
         )
 
         if curr_best_dev <= curr_dev:
@@ -623,7 +677,7 @@ def main(args):
         if args.lr_decay>0:
             optimizer.param_groups[0]['lr'] *= args.lr_decay
 
-        frames.append(plot_histogram(element_loss, train_noise, epoch))
+        frames.append(plot_histogram(element_loss, train_noise, epoch, bmm_model))
         create_gif(frames)
     
         test_acc = eval_model(args.max_epoch, best_model, test_x, test_y, noisy=False)
@@ -662,10 +716,11 @@ if __name__ == "__main__":
     argparser.add_argument("--dataset", type=str, default="yelp", help="which dataset")
     argparser.add_argument("--embedding", type=str, default="embeddings/glove.txt", help="word vectors")
     argparser.add_argument("--batch_size", "--batch", type=int, default=32)
-    argparser.add_argument("--max_epoch", type=int, default=60)
-    argparser.add_argument("--d", type=int, default=150)
+    argparser.add_argument("--max_epoch", type=int, default=50)
+    argparser.add_argument("--d", type=int, default=300)
+    argparser.add_argument("--warmup", type=int, default=100)
     argparser.add_argument("--dropout", type=float, default=0.3)
-    argparser.add_argument("--depth", type=int, default=1)
+    argparser.add_argument("--depth", type=int, default=2)
     argparser.add_argument("--lr", type=float, default=0.001)
     argparser.add_argument("--lr_decay", type=float, default=0)
     argparser.add_argument("--cv", type=int, default=0)
@@ -673,9 +728,54 @@ if __name__ == "__main__":
     argparser.add_argument("--save_data_split", action='store_true', help="whether to save train/test split")
     argparser.add_argument("--gpu_id", type=int, default=0)
     argparser.add_argument("--baseline", action='store_true', default=False)
+    argparser.add_argument('--noise', type=float)
 
     args = argparser.parse_args()
     # args.save_path = os.path.join(args.save_path, args.dataset)
-    print (args)
+    
+    old_out = sys.stdout
+
+    class St_ampe_dOut:
+        """Stamped stdout."""
+        def __init__(self, f):
+            self.f = f
+            self.nl = True
+
+        def write(self, x):
+            """Write function overloaded."""
+            if x == '\n':
+                old_out.write(x)
+                self.nl = True
+            elif self.nl:
+                old_out.write('%s'%(x))
+                self.nl = False
+            else:
+                old_out.write(x)
+            try:
+                self.f.write(str(x))
+                self.f.flush()
+            except:
+                pass
+            old_out.flush()
+
+        def flush(self):
+            try:
+                self.f.flush()
+            except:
+                pass
+            old_out.flush()
+    
+    global results_dir
+    b = 'baseline' if args.baseline else 'ours'
+    results_dir = os.path.join('results',args.dataset.split('/')[-1])
+    if not os.path.exists(results_dir):
+        os.mkdir(results_dir)
+    results_dir = os.path.join(results_dir, 'results_%s_%.2f'%(b,args.noise))
+    if not os.path.exists(results_dir):
+        os.mkdir(results_dir)
+    sys.stdout = St_ampe_dOut(open(os.path.join(results_dir,'output.txt'), 'w'))
+    
+    
+    print(args)
     torch.cuda.set_device(args.gpu_id)
     main(args)
