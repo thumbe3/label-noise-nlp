@@ -385,13 +385,13 @@ def eval_model_noisy(model, input_x, input_y, input_noise):
 
 
 def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
-        best_test, save_path, bmm_model, nclasses, train_noise=None, train_orig_labels=None, prob=None, preds=None, warmup=None):
+        best_test, save_path, bmm_model, nclasses, train_noise=None, train_orig_labels=None, prob=None, preds=None, warmup=None, round_prob=True, beta=10):
 
     if bmm_model is not None:
         if epoch == warmup:
             print('Fitting BMM')
             bmm_model, prob, preds = track_training_loss(model, train_x, train_y, bmm_model, epoch)
-            prob2 = torch.round(prob)
+            prob2 = torch.round(prob) if round_prob else prob
             count_var=0
             correct=0
             correct_noisy=0
@@ -459,7 +459,6 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
     
     #if not epoch+1== warmup:
     #    beta = 1/(epoch-warmup+1)
-    beta = 10
     #lamda = 0.2
 
     total_contrast_loss=total_cross_entropy_loss=total_loss=0
@@ -660,8 +659,8 @@ def main(args):
             train_x, train_y,
             dev_x, dev_y,
             curr_best_dev, args.save_path,
-            bmm_model, nclasses, train_noise_batches, train_orig_labels_batches, prob=prob, preds=preds, warmup=args.warmup
-        )
+            bmm_model, nclasses, train_noise_batches, train_orig_labels_batches, prob=prob, preds=preds, warmup=args.warmup,
+                                                                     round_prob=args.round_prob, beta=args.beta)
 
         if curr_best_dev <= curr_dev:
             #print('New best model found', curr_best_dev, curr_dev, curr_best_dev<=curr_dev)
@@ -728,7 +727,9 @@ if __name__ == "__main__":
     argparser.add_argument("--save_data_split", action='store_true', help="whether to save train/test split")
     argparser.add_argument("--gpu_id", type=int, default=0)
     argparser.add_argument("--baseline", action='store_true', default=False)
+    argparser.add_argument("--round_prob", type=int, default=1)
     argparser.add_argument('--noise', type=float)
+    argparser.add_argument('--beta', type=float, default=10)
 
     args = argparser.parse_args()
     # args.save_path = os.path.join(args.save_path, args.dataset)
@@ -767,10 +768,10 @@ if __name__ == "__main__":
     
     global results_dir
     b = 'baseline' if args.baseline else 'ours'
-    results_dir = os.path.join('results',args.dataset.split('/')[-1])
+    results_dir = os.path.join('results_random',args.dataset.split('/')[-1])
     if not os.path.exists(results_dir):
         os.mkdir(results_dir)
-    results_dir = os.path.join(results_dir, 'results_%s_%.2f'%(b,args.noise))
+    results_dir = os.path.join(results_dir, f"results_{args.noise}_{args.beta}_{args.round_prob}_{args.warmup}")
     if not os.path.exists(results_dir):
         os.mkdir(results_dir)
     sys.stdout = St_ampe_dOut(open(os.path.join(results_dir,'output.txt'), 'w'))
