@@ -33,6 +33,7 @@ def read_corpus(path, clean=True, encoding='utf8', shuffle=False, lower=True, ge
     labels = []
     if get_noise:
         noises = []
+        orig_labels = []
     print(path)
     with open(path, encoding=encoding) as fin:
         for line in fin:
@@ -46,8 +47,8 @@ def read_corpus(path, clean=True, encoding='utf8', shuffle=False, lower=True, ge
             labels.append(label)
             data.append(text.split())
             if get_noise:
-                noise = int(line.split('\t')[2])
-                noises.append(int(noise))
+                noises.append(int(line.split('\t')[2]))
+                orig_labels.append(int(line.split('\t')[3]))
 
     if shuffle:
         perm = list(range(len(data)))
@@ -56,9 +57,10 @@ def read_corpus(path, clean=True, encoding='utf8', shuffle=False, lower=True, ge
         labels = [labels[i] for i in perm]
         if get_noise:
             noises = [noises[i] for i in perm]
+            orig_labels = [orig_labels[i] for i in perm] 
 
     if get_noise:
-        return data, labels, noises
+        return data, labels, noises, orig_labels
     else:
         return data, labels
 
@@ -105,7 +107,7 @@ def create_one_batch(x, y, map2id, oov='<oov>'):
     assert x.size(0) == length*batch_size
     return x.view(batch_size, length).t().contiguous().cuda(), torch.LongTensor(y).cuda()
 
-def create_one_batch_xyz(x, y, z, map2id, oov='<oov>'):
+def create_one_batch_xyz(x, y, z, a, map2id, oov='<oov>'):
     oov_id = map2id[oov]
     x = pad(x)
     length = len(x[0])
@@ -113,7 +115,7 @@ def create_one_batch_xyz(x, y, z, map2id, oov='<oov>'):
     x = [ map2id.get(w, oov_id) for seq in x for w in seq ]
     x = torch.LongTensor(x)
     assert x.size(0) == length*batch_size
-    return x.view(batch_size, length).t().contiguous().cuda(), torch.LongTensor(y).cuda(), torch.LongTensor(z).cuda()
+    return x.view(batch_size, length).t().contiguous().cuda(), torch.LongTensor(y).cuda(), torch.LongTensor(z).cuda(), torch.LongTensor(a).cuda()
 
 def create_one_batch_x(x, map2id, oov='<oov>'):
     oov_id = map2id[oov]
@@ -163,7 +165,7 @@ def create_batches(x, y, batch_size, map2id, perm=None, sort=False):
     return batches_x, batches_y
 
 # shuffle training examples and create mini-batches
-def create_batches_xyz(x, y, z, batch_size, map2id, perm=None, sort=False):
+def create_batches_xyz(x, y, z, a, batch_size, map2id, perm=None, sort=False):
 
     lst = perm or range(len(x))
 
@@ -174,6 +176,7 @@ def create_batches_xyz(x, y, z, batch_size, map2id, perm=None, sort=False):
     x = [ x[i] for i in lst ]
     y = [ y[i] for i in lst ]
     z = [ z[i] for i in lst ]
+    a = [ a[i] for i in lst ]
 
 
     sum_len = 0.
@@ -182,13 +185,15 @@ def create_batches_xyz(x, y, z, batch_size, map2id, perm=None, sort=False):
     batches_x = [ ]
     batches_y = [ ]
     batches_z = [ ]
+    batches_a = []
     size = batch_size
     nbatch = (len(x)-1) // size + 1
     for i in range(nbatch):
-        bx, by, bz = create_one_batch_xyz(x[i*size:(i+1)*size], y[i*size:(i+1)*size], z[i*size:(i+1)*size], map2id)
+        bx, by, bz, ba = create_one_batch_xyz(x[i*size:(i+1)*size], y[i*size:(i+1)*size], z[i*size:(i+1)*size], a[i*size:(i+1)*size], map2id)
         batches_x.append(bx)
         batches_y.append(by)
         batches_z.append(bz)
+        batches_a.append(ba)
 
     if sort:
         perm = list(range(nbatch))
@@ -196,12 +201,13 @@ def create_batches_xyz(x, y, z, batch_size, map2id, perm=None, sort=False):
         batches_x = [ batches_x[i] for i in perm ]
         batches_y = [ batches_y[i] for i in perm ]
         batches_z = [ batches_z[i] for i in perm ]
+        batches_a = [ batches_a[i] for i in perm ]
 
     sys.stdout.write("{} batches, avg sent len: {:.1f}\n".format(
         nbatch, sum_len/len(x)
     ))
 
-    return batches_x, batches_y, batches_z
+    return batches_x, batches_y, batches_z, batches_a
 
 
 # shuffle training examples and create mini-batches

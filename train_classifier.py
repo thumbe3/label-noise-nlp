@@ -242,9 +242,12 @@ class Model(nn.Module):
     def forward(self, input):
         if self.cnn:
             input = input.t()
+        #print(input.size())
         emb = self.emb_layer(input)
         emb = self.drop(emb)
-
+        #print(emb.size())
+        #exit()
+        
         if not self.cnn:
             self.encoder.flatten_parameters()   
 
@@ -253,7 +256,8 @@ class Model(nn.Module):
         else:
             output, hidden = self.encoder(emb)
             output = torch.max(output, dim=0)[0].squeeze()
-
+        #print(output.size())
+        #exit()
         output = self.drop(output)
         output = self.out(output)
 
@@ -319,7 +323,8 @@ class Model_NM(Model):
         NM_inp_size = nclasses
         NM_hidden_size = int(NM_inp_size*4)
 
-        self.NM = Feedforward(NM_inp_size, NM_hidden_size, nclasses)
+        self.NM = Feedforward(NM_inp_size+self.d_out, NM_hidden_size, nclasses)
+        #self.NM = Feedforward(NM_inp_size, NM_hidden_size, nclasses)
 
         # print(NM_inp_size, NM_hidden_size)
 
@@ -341,9 +346,10 @@ class Model_NM(Model):
 
         output = self.drop(output)
         clean_output = self.out(output)
+        #pdb.set_trace()
 
-        #noisy_output = self.NM(torch.cat((output, clean_output), dim=1))
-        noisy_output = self.NM(clean_output)
+        noisy_output = self.NM(torch.cat((output, clean_output), dim=1))
+        #noisy_output = self.NM(clean_output)
         
         return clean_output, noisy_output
 
@@ -391,7 +397,8 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
         if epoch == warmup:
             print('Fitting BMM')
             bmm_model, prob, preds = track_training_loss(model, train_x, train_y, bmm_model, epoch)
-            prob2 = torch.round(prob) if round_prob else prob
+            prob2 = torch.round(prob)
+            #pdb.set_trace()
             count_var=0
             correct=0
             correct_noisy=0
@@ -462,7 +469,8 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
     #lamda = 0.2
 
     total_contrast_loss=total_cross_entropy_loss=total_loss=0
-    
+    prob2 = torch.round(prob) if epoch>=warmup and round_prob    else prob
+    #pdb.set_trace()
     for x, y, z in zip(train_x, train_y, train_noise):
         niter += 1
         cnt += 1
@@ -475,7 +483,7 @@ def train_model(epoch, model, optimizer, train_x, train_y, dev_x, dev_y,
                 cross_entropy_loss = criterion(clean_output, y)
                 loss = cross_entropy_loss
             else:
-                p = prob[count_var:count_var+x.size()[1]]
+                p = prob2[count_var:count_var+x.size()[1]]
                 preds_batch = preds[count_var:count_var+x.size()[1]]
                 #p = z
                 count_var+=x.size()[1]
@@ -530,11 +538,23 @@ def create_gif(frames, fname='hist.gif'):
                append_images=frames[1:],
                save_all=True,
                duration=400, loop=0)
-
-
+    
+    
 def plot_histogram(losses, labels, epoch, bmm_model):
     clean = [x for x,y in zip(losses, labels) if y==0]
     noisy = [x for x,y in zip(losses, labels) if y==1]
+    
+#     plt.figure()
+#     hist, bins = np.histogram(clean, bins=50)
+#     width = 0.7 * (bins[1] - bins[0])
+#     center = (bins[:-1] + bins[1:]) / 2
+#     plt.bar(center, hist, align='center', width=width)
+
+#     hist, bins = np.histogram(noisy, bins=50)
+#     width = 0.7 * (bins[1] - bins[0])
+#     center = (bins[:-1] + bins[1:]) / 2
+#     plt.bar(center, hist, align='center', width=width, color='red')
+#     plt.title('Epoch %d'%(int(epoch)+1))
 
     fig, (ax1, ax2, ax3) = plt.subplots(1,3,figsize=(14,6))
     
@@ -547,11 +567,13 @@ def plot_histogram(losses, labels, epoch, bmm_model):
     width = 0.7 * (bins[1] - bins[0])
     center = (bins[:-1] + bins[1:]) / 2
     ax1.bar(center, hist, align='center', width=width, color='red')
+    ax1.set_title('Epoch %d'%(int(epoch)+1))
     
     hist, bins = np.histogram(losses, bins=50)
     width = 0.7 * (bins[1] - bins[0])
     center = (bins[:-1] + bins[1:]) / 2
     ax2.bar(center, hist, align='center', width=width, color='green')
+    ax2.set_title('Epoch %d'%(int(epoch)+1))
     
     if bmm_model is not None:
         x = np.linspace(0, 1, 100)
@@ -559,14 +581,15 @@ def plot_histogram(losses, labels, epoch, bmm_model):
         ax3.plot(x, bmm_model.weighted_likelihood(x, 1), label='positive')
 #         ax3.plot(x, bmm_model.probability(x), lw=2, label='mixture')
         ax3.legend()
+        ax3.set_title('Epoch %d'%(int(epoch)+1))
 
 
     if epoch//10 == 0:
-        epoch = "0"+str(epoch)
+        epoch = "0"+str(int(epoch)+1)
     else:
-        epoch = str(epoch)
+        epoch = str(int(epoch)+1)
 
-    plt.title('Epoch %s'%epoch)
+#     plt.title('Epoch %s'%epoch)
 
     folder = os.path.join(results_dir)
     if not os.path.isdir(folder):
@@ -577,7 +600,7 @@ def plot_histogram(losses, labels, epoch, bmm_model):
 
     fname = os.path.join(folder, 'hist_%s.png'%epoch)
 
-    plt.show()
+    #plt.show()
     plt.savefig(fname)
     plt.clf()
 
@@ -597,11 +620,15 @@ def main(args):
         os.remove(file)
 
     train_x, train_y, train_noise, train_orig_labels = dataloader.read_corpus(os.path.join(args.dataset,"train.tsv"), shuffle=True, get_noise=True)
-#     print(len(train_x), len(train_y), len(train_noise), len(train_orig_labels))
-#     exit()
+    print(len(train_x), len(train_y), len(train_noise), len(train_orig_labels))
+    #     exit()
     dev_x, dev_y, dev_noise, dev_orig_labels = dataloader.read_corpus(os.path.join(args.dataset,"dev.tsv"), shuffle=True, get_noise=True)
     test_x, test_y = dataloader.read_corpus(os.path.join(args.dataset,"test.tsv"), shuffle=True)
 
+    #print(len(train_x), len(dev_x), len(test_x))
+    # 4949 503 500
+    # 112000 8000 7600
+#     pdb.set_trace()
     nclasses = max(train_y) + 1
     print("NUM CLASSES: "+ str(nclasses))
     
@@ -624,7 +651,8 @@ def main(args):
         args.batch_size,
         model.word2id,
     )
-    
+    print(f"Noise = {1.0*len(list(filter(lambda x: x == 1, train_noise)))/len(train_noise)}")
+    #pdb.set_trace()
     #print(train_y[0], train_noise_batches[0], train_orig_labels_batches[0])
     #exit()
     
@@ -730,10 +758,16 @@ if __name__ == "__main__":
     argparser.add_argument("--round_prob", type=int, default=1)
     argparser.add_argument('--noise', type=float)
     argparser.add_argument('--beta', type=float, default=10)
+    argparser.add_argument("--result", type=str, default="result_random", help="which result directory to put in")
 
     args = argparser.parse_args()
+
+    if args.dataset == "data/ag_news":
+        args.beta = args.noise*20 if args.noise != 0.0 else 2.0
+        #args.warmup = 6
+
     # args.save_path = os.path.join(args.save_path, args.dataset)
-    
+    #args.beta = 2 if args.noise==0.0 else args.noise*20  # remove this line
     old_out = sys.stdout
 
     class St_ampe_dOut:
@@ -768,7 +802,9 @@ if __name__ == "__main__":
     
     global results_dir
     b = 'baseline' if args.baseline else 'ours'
-    results_dir = os.path.join('results_random',args.dataset.split('/')[-1])
+    if not os.path.exists(args.result):
+        os.mkdir(args.result)
+    results_dir = os.path.join(args.result, args.dataset.split('/')[-1])
     if not os.path.exists(results_dir):
         os.mkdir(results_dir)
     results_dir = os.path.join(results_dir, f"results_{args.noise}_{args.beta}_{args.round_prob}_{args.warmup}")
@@ -776,6 +812,9 @@ if __name__ == "__main__":
         os.mkdir(results_dir)
     sys.stdout = St_ampe_dOut(open(os.path.join(results_dir,'output.txt'), 'w'))
     
+
+
+
     
     print(args)
     torch.cuda.set_device(args.gpu_id)

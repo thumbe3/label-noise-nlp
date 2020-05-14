@@ -2,3 +2,9 @@ BAE/*
 /prev_outputs.txt
 /._.DS_Store
 /*.out
+lstm/*
+cnn/*
+data/*
+embeddings/*
+figures/*
+accuracy_graphs/*
