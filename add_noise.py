@@ -52,7 +52,7 @@ def add_noise(orig,new,noise,num_classes,dataset, mode):
                     changed+=1
 
                 else:
-                    new.write(line[:-1]+"\t%s\n"%str(label))
+                    new.write(line[:-1]+"\t0\t%s\n"%str(label))
 
 
             elif mode==1:
@@ -63,7 +63,7 @@ def add_noise(orig,new,noise,num_classes,dataset, mode):
                         new.write(parts[0]+"\t"+str(new_label)+"\t1\t"+str(label)+"\n")
                         changed+=1
                 else:
-                    new.write(line[:-1]+"\t%s\n"%str(label))
+                    new.write(line[:-1]+"\t0\t%s\n"%str(label))
 
             elif mode >= 2:
                 flag = False
@@ -80,7 +80,7 @@ def add_noise(orig,new,noise,num_classes,dataset, mode):
                         break
 
                 if not flag:
-                    new.write(line[:-1]+"\t%s\n"%str(label))
+                    new.write(line[:-1]+"\t0\t%s\n"%str(label))
 
 
 
@@ -107,7 +107,7 @@ def add_noise(orig,new,noise,num_classes,dataset, mode):
                     new.write(parts[0] + "\t" + str(new_label) + "\t1\t" + str(label) + "\n")
                     changed += 1
                 else:
-                    new.write(line[:-1] + "\t%s\n" % str(label))
+                    new.write(line[:-1] + "\t0\t%s\n" % str(label))
 
             elif mode == 1:  # only label dependent
 
@@ -127,7 +127,7 @@ def add_noise(orig,new,noise,num_classes,dataset, mode):
                     new.write(parts[0] + "\t" + str(new_label) + "\t1\t" + str(label) + "\n")
                     changed += 1
                 else:
-                    new.write(line[:-1] + "\t%s\n" % str(label))
+                    new.write(line[:-1] + "\t0\t%s\n" % str(label))
 
 
             elif mode == 2:  # instance specific
@@ -140,7 +140,7 @@ def add_noise(orig,new,noise,num_classes,dataset, mode):
                     new.write(parts[0] + "\t" + str(new_label) + "\t1\t" + str(label) + "\n")
                     changed += 1
                 else:
-                    new.write(line[:-1] + "\t%s\n" % str(label))
+                    new.write(line[:-1] + "\t0\t%s\n" % str(label))
 
             elif mode == 3:
                 if len(parts[0])>max_len*length_noise[noise]:
@@ -151,7 +151,7 @@ def add_noise(orig,new,noise,num_classes,dataset, mode):
                     new.write(parts[0] + "\t" + str(new_label) + "\t1\t" + str(label) + "\n")
                     changed += 1
                 else:
-                    new.write(line[:-1] + "\t%s\n" % str(label))
+                    new.write(line[:-1] + "\t0\t%s\n" % str(label))
 
 
         print(count, changed, changed / count)
